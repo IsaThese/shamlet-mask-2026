@@ -2,13 +2,19 @@
   Shamlet Mask + Pig Aggro Fix
 
   - Provides disguisehat when missing (standalone).
-  - Patches equip/unequip + Wortox when disguisehat already exists (ATC / TA / Shamlet Mask).
+  - Patches equip/unequip + Wortox when disguisehat already exists (ATC / TE / TA / Shamlet Mask).
   - Never blindly PrefabFiles = { "disguisehat" } alongside those mods.
 ]]
 
 local FIX_PIG_AGGRO = GetModConfigData("FIX_PIG_AGGRO")
 local PROVIDE_MASK = GetModConfigData("PROVIDE_MASK")
 local STARTING_MASK = GetModConfigData("STARTING_MASK")
+local GUARD_TARGET_DIST = GetModConfigData("CITY_PIG_GUARD_TARGET_DIST")
+local GUARD_KEEP_TARGET_DIST = GetModConfigData("CITY_PIG_GUARD_KEEP_TARGET_DIST")
+local DISABLE_KEEPTARGET_SHARE = GetModConfigData("DISABLE_KEEPTARGET_SHARE")
+local ALWAYS_DISGUISE_WEBBER_WORTOX = GetModConfigData("ALWAYS_DISGUISE_WEBBER_WORTOX")
+local DISGUISE_TOPHAT = GetModConfigData("DISGUISE_TOPHAT")
+local DISGUISE_TOPHAT_MAGICIAN = GetModConfigData("DISGUISE_TOPHAT_MAGICIAN")
 
 -- Mods known to register disguisehat (workshop IDs and common local folder names).
 local DISGUISEHAT_PROVIDERS = {
@@ -16,6 +22,7 @@ local DISGUISEHAT_PROVIDERS = {
     "workshop-3322803908", -- Above the Clouds
     "workshop-3330056551", -- Above The Clouds - Strange New Powers
     "workshop-2986194136", -- Tropical Adventures
+    "workshop-1505270912", -- Tropical Experience | SW HAM Biomes
 }
 
 local DISGUISEHAT_FOLDER_HINTS = {
@@ -23,12 +30,20 @@ local DISGUISEHAT_FOLDER_HINTS = {
     "3322803908",
     "3330056551",
     "2986194136",
+    "1505270912",
     "shamlet",
     "above the clouds",
     "above_the_clouds",
     "porklandbugfixing",
     "tropical adventures",
     "tropical_adventures",
+    "tropicaladventures",
+    "ship of theseus",
+    "ship_of_theseus",
+    "tropical experience",
+    "tropical_experience",
+    "tropicalexperience",
+    "from beyond",
 }
 
 local OUR_MODNAME = modname -- folder name injected by the mod loader
@@ -99,10 +114,16 @@ local disguisehat_known = PrefabAlreadyExists("disguisehat")
 local should_provide = PROVIDE_MASK and other_provider == nil and not disguisehat_known
 
 print(string.format(
-    "[Shamlet Mask 2026] FIX_PIG_AGGRO=%s PROVIDE_MASK=%s STARTING_MASK=%s | other_provider=%s prefab_known=%s => provide_own=%s",
+    "[Shamlet Mask 2026] FIX_PIG_AGGRO=%s PROVIDE_MASK=%s STARTING_MASK=%s | target_dist=%s keep_dist=%s no_share=%s always_disguise=%s disguise_tophat=%s disguise_magician_tophat=%s | other_provider=%s prefab_known=%s => provide_own=%s",
     tostring(FIX_PIG_AGGRO),
     tostring(PROVIDE_MASK),
     tostring(STARTING_MASK),
+    tostring(GUARD_TARGET_DIST),
+    tostring(GUARD_KEEP_TARGET_DIST),
+    tostring(DISABLE_KEEPTARGET_SHARE),
+    tostring(ALWAYS_DISGUISE_WEBBER_WORTOX),
+    tostring(DISGUISE_TOPHAT),
+    tostring(DISGUISE_TOPHAT_MAGICIAN),
     tostring(other_provider),
     tostring(disguisehat_known),
     tostring(should_provide)
@@ -154,37 +175,100 @@ if should_provide then
 end
 
 --------------------------------------------------------------------------
--- Aggression fix: wrap disguisehat + Wortox inclination
+-- Always disguise Webber / Wortox (no mask required)
 --------------------------------------------------------------------------
 
-if FIX_PIG_AGGRO then
-    local disguise_aggro = GLOBAL.require("disguise_aggro")
+local disguise_aggro = nil
+if FIX_PIG_AGGRO or ALWAYS_DISGUISE_WEBBER_WORTOX or DISGUISE_TOPHAT or DISGUISE_TOPHAT_MAGICIAN then
+    disguise_aggro = GLOBAL.require("disguise_aggro")
+end
 
+if ALWAYS_DISGUISE_WEBBER_WORTOX then
+    disguise_aggro.SetAlwaysDisguiseEnabled(true)
+
+    local always_disguise = GLOBAL.require("AlwaysDisguise")
+    local function ApplyAlwaysDisguise(inst)
+        if not GLOBAL.TheWorld.ismastersim then
+            return
+        end
+        always_disguise.Apply(inst)
+    end
+    AddPrefabPostInit("webber", ApplyAlwaysDisguise)
+    AddPrefabPostInit("wortox", ApplyAlwaysDisguise)
+end
+
+--------------------------------------------------------------------------
+-- Aggression fix: disguise tags, Wortox, TUNING ranges, KeepTarget share
+--------------------------------------------------------------------------
+
+-- Wrap mask whenever tags matter (normal fix, or always-disguise unequip protection).
+if FIX_PIG_AGGRO or ALWAYS_DISGUISE_WEBBER_WORTOX then
     AddPrefabPostInit("disguisehat", function(inst)
         if not GLOBAL.TheWorld.ismastersim then
             return
         end
         disguise_aggro.WrapEquippable(inst)
     end)
+end
 
-    local wortoxPatch = GLOBAL.require("PatchWortox")
-    AddPrefabPostInit("wortox", function(inst)
-        wortoxPatch.PatchWortox(inst)
+-- Top Hat + Magician's Top Hat share prefab "tophat"; Magician is a converted state.
+if DISGUISE_TOPHAT or DISGUISE_TOPHAT_MAGICIAN then
+    AddPrefabPostInit("tophat", function(inst)
+        if not GLOBAL.TheWorld.ismastersim then
+            return
+        end
+        disguise_aggro.WrapTophat(inst, {
+            normal = DISGUISE_TOPHAT,
+            magician = DISGUISE_TOPHAT_MAGICIAN,
+        })
     end)
 end
 
---------------------------------------------------------------------------
--- Starting mask (skip if stock Shamlet Mask already grants one)
---------------------------------------------------------------------------
-
-local shamlet_mask_enabled = other_provider ~= nil and (
-    other_provider == "workshop-1581485409"
-    or string.find(string.lower(tostring(other_provider)), "1581485409", 1, true) ~= nil
-    or string.find(string.lower(tostring(other_provider)), "shamlet", 1, true) ~= nil
-)
-
-if STARTING_MASK and not shamlet_mask_enabled then
-    if should_provide or other_provider ~= nil or disguisehat_known then
-        modimport("startitem.lua")
+if FIX_PIG_AGGRO then
+    -- Skip weak PatchWortox when AlwaysDisguise already owns Wortox inclination.
+    if not ALWAYS_DISGUISE_WEBBER_WORTOX then
+        local wortoxPatch = GLOBAL.require("PatchWortox")
+        AddPrefabPostInit("wortox", function(inst)
+            wortoxPatch.PatchWortox(inst)
+        end)
     end
+
+    -- Range overrides (0 = leave alone). Needed for ATC TUNING; also drives TA retarget filter.
+    local retarget_range = GUARD_TARGET_DIST ~= nil and GUARD_TARGET_DIST ~= 0
+    if retarget_range then
+        GLOBAL.TUNING.CITY_PIG_GUARD_TARGET_DIST = GUARD_TARGET_DIST
+    end
+    if GUARD_KEEP_TARGET_DIST ~= nil and GUARD_KEEP_TARGET_DIST ~= 0 then
+        GLOBAL.TUNING.CITY_PIG_GUARD_KEEP_TARGET_DIST = GUARD_KEEP_TARGET_DIST
+    end
+
+    if DISABLE_KEEPTARGET_SHARE or retarget_range then
+        local cityPigPatch = GLOBAL.require("PatchCityPigCombat")
+        cityPigPatch.Apply(AddPrefabPostInit, {
+            keep_target = DISABLE_KEEPTARGET_SHARE == true,
+            retarget_range = retarget_range,
+        })
+    end
+end
+
+--------------------------------------------------------------------------
+-- Starting mask (skip only if stock Shamlet Mask already grants one)
+--------------------------------------------------------------------------
+
+local function IsStockShamletMaskEnabled()
+    for _, name in ipairs(GetEnabledModNames()) do
+        if name == "workshop-1581485409"
+            or string.find(string.lower(tostring(name)), "1581485409", 1, true) ~= nil then
+            return true
+        end
+    end
+    return false
+end
+
+-- Always import when enabled: do not gate on provider/prefab detection at load
+-- time (Prefabs may not be registered yet; TE detection can also miss).
+-- startitem.lua eligibility no longer depends only on monster tags (AlwaysDisguise
+-- strips those before OnNewSpawn for Wortox/Webber).
+if STARTING_MASK and not IsStockShamletMaskEnabled() then
+    modimport("startitem.lua")
 end
